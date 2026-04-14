@@ -36,7 +36,7 @@
 #ifdef VIAL_ENABLE
 #include "vial.h"
 #    include "timer.h"
-#    include "print.h"
+#    include "debug.h"
 
 /*
  * Manual test macro:
@@ -380,8 +380,12 @@ void dynamic_keymap_macro_send(uint8_t id) {
                     }
                 }
             } else if (data[1] == VIAL_MACRO_ACTION_RAND_DELAY) {
-                uint16_t min_ms = dynamic_keymap_read_byte(offset++) | (dynamic_keymap_read_byte(offset++) << 8);
-                uint16_t max_ms = dynamic_keymap_read_byte(offset++) | (dynamic_keymap_read_byte(offset++) << 8);
+                uint8_t min_lo = dynamic_keymap_read_byte(offset++);
+                uint8_t min_hi = dynamic_keymap_read_byte(offset++);
+                uint8_t max_lo = dynamic_keymap_read_byte(offset++);
+                uint8_t max_hi = dynamic_keymap_read_byte(offset++);
+                uint16_t min_ms = (uint16_t)min_lo | ((uint16_t)min_hi << 8);
+                uint16_t max_ms = (uint16_t)max_lo | ((uint16_t)max_hi << 8);
                 if (min_ms > max_ms) {
                     uint16_t tmp = min_ms;
                     min_ms       = max_ms;
