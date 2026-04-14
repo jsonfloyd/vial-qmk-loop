@@ -377,7 +377,8 @@ void dynamic_keymap_macro_send(uint8_t id) {
                         dynamic_keymap_loop_stop_requested = false;
                     } else {
                         offset = loop_offset;
-                        // yield to allow HID reports and other processing
+                        // yield to allow matrix/HID processing so a second press can request loop stop
+                        keyboard_task();
                         wait_ms(1);
                     }
                 }
