@@ -100,3 +100,4 @@ void     dynamic_keymap_macro_reset(void);
 
 void dynamic_keymap_macro_send(uint8_t id);
 bool dynamic_keymap_macro_toggle_loop(uint8_t id);
+void dynamic_keymap_macro_arm_stop(uint8_t id);
