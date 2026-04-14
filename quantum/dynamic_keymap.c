@@ -58,6 +58,7 @@ __attribute__((unused)) static const uint8_t dynamic_keymap_macro_loop_rand_dela
 
 static volatile uint8_t dynamic_keymap_looping_macro_id = UINT8_MAX;
 static volatile bool    dynamic_keymap_loop_stop_requested = false;
+static volatile bool    dynamic_keymap_loop_stop_armed = false;
 #endif
 
 #ifndef DYNAMIC_KEYMAP_MACRO_DELAY
@@ -266,6 +267,8 @@ static uint16_t decode_keycode(uint16_t kc) {
 }
 
 void dynamic_keymap_macro_send(uint8_t id) {
+    uint8_t macro_id = id;
+
     if (id >= DYNAMIC_KEYMAP_MACRO_COUNT) {
         return;
     }
@@ -358,14 +361,16 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 loop_offset = offset;
                 loop_active = true;
                 loop_iter_count = 0;
-                dynamic_keymap_looping_macro_id = id;
+                dynamic_keymap_looping_macro_id = macro_id;
                 dynamic_keymap_loop_stop_requested = false;
+                dynamic_keymap_loop_stop_armed = false;
             } else if (data[1] == VIAL_MACRO_ACTION_LOOP_END) {
                 if (loop_active) {
-                    if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == id) {
+                    if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == macro_id) {
                         loop_active = false;
                         dynamic_keymap_looping_macro_id = UINT8_MAX;
                         dynamic_keymap_loop_stop_requested = false;
+                        dynamic_keymap_loop_stop_armed = false;
                         continue;
                     }
                     if (++loop_iter_count > VIAL_MACRO_LOOP_MAX_ITER) {
@@ -373,9 +378,11 @@ void dynamic_keymap_macro_send(uint8_t id) {
                         loop_active = false;
                         dynamic_keymap_looping_macro_id = UINT8_MAX;
                         dynamic_keymap_loop_stop_requested = false;
+                        dynamic_keymap_loop_stop_armed = false;
                     } else {
                         offset = loop_offset;
-                        // yield to allow HID reports and other processing
+                        // yield to allow matrix/HID processing so a second press can request loop stop
+                        keyboard_task();
                         wait_ms(1);
                     }
                 }
@@ -405,9 +412,10 @@ void dynamic_keymap_macro_send(uint8_t id) {
         }
     }
 #ifdef VIAL_ENABLE
-    if (dynamic_keymap_looping_macro_id == id) {
+    if (dynamic_keymap_looping_macro_id == macro_id) {
         dynamic_keymap_looping_macro_id = UINT8_MAX;
         dynamic_keymap_loop_stop_requested = false;
+        dynamic_keymap_loop_stop_armed = false;
     }
 #endif
 }
@@ -415,6 +423,9 @@ void dynamic_keymap_macro_send(uint8_t id) {
 bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
 #ifdef VIAL_ENABLE
     if (dynamic_keymap_looping_macro_id == id) {
+        if (!dynamic_keymap_loop_stop_armed) {
+            return true;
+        }
         dynamic_keymap_loop_stop_requested = true;
         return true;
     }
@@ -422,4 +433,14 @@ bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
     (void)id;
 #endif
     return false;
+}
+
+void dynamic_keymap_macro_arm_stop(uint8_t id) {
+#ifdef VIAL_ENABLE
+    if (dynamic_keymap_looping_macro_id == id) {
+        dynamic_keymap_loop_stop_armed = true;
+    }
+#else
+    (void)id;
+#endif
 }

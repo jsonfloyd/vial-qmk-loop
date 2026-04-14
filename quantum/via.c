@@ -182,15 +182,17 @@ void via_set_layout_options(uint32_t value) {
 // Called by QMK core to process VIA-specific keycodes.
 bool process_record_via(uint16_t keycode, keyrecord_t *record) {
     // Handle macros
-    if (record->event.pressed) {
-        if (keycode >= QK_MACRO && keycode <= QK_MACRO_MAX) {
-            uint8_t id = keycode - QK_MACRO;
+    if (keycode >= QK_MACRO && keycode <= QK_MACRO_MAX) {
+        uint8_t id = keycode - QK_MACRO;
+        if (record->event.pressed) {
             if (dynamic_keymap_macro_toggle_loop(id)) {
                 return false;
             }
             dynamic_keymap_macro_send(id);
-            return false;
+        } else {
+            dynamic_keymap_macro_arm_stop(id);
         }
+        return false;
     }
 
     return true;
