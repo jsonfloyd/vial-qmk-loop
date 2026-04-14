@@ -59,10 +59,15 @@ __attribute__((unused)) static const uint8_t dynamic_keymap_macro_loop_rand_dela
 static volatile uint8_t dynamic_keymap_looping_macro_id = UINT8_MAX;
 static volatile bool    dynamic_keymap_loop_stop_requested = false;
 static volatile uint32_t dynamic_keymap_active_macro_mask  = 0;
+static volatile uint32_t dynamic_keymap_loop_start_time    = 0;
 #endif
 
 #ifndef DYNAMIC_KEYMAP_MACRO_DELAY
 #    define DYNAMIC_KEYMAP_MACRO_DELAY TAP_CODE_DELAY
+#endif
+
+#ifndef DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS
+#    define DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS 50
 #endif
 
 uint8_t dynamic_keymap_get_layer_count(void) {
@@ -385,6 +390,7 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 loop_iter_count = 0;
                 dynamic_keymap_looping_macro_id = macro_id;
                 dynamic_keymap_loop_stop_requested = false;
+                dynamic_keymap_loop_start_time = timer_read32();
             } else if (data[1] == VIAL_MACRO_ACTION_LOOP_END) {
                 if (loop_active) {
                     if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == macro_id) {
@@ -446,6 +452,9 @@ void dynamic_keymap_macro_send(uint8_t id) {
 bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
 #ifdef VIAL_ENABLE
     if (dynamic_keymap_looping_macro_id == id) {
+        if (timer_elapsed32(dynamic_keymap_loop_start_time) < DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS) {
+            return true;
+        }
         dynamic_keymap_loop_stop_requested = true;
         return true;
     }
