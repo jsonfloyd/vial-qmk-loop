@@ -101,3 +101,7 @@ void     dynamic_keymap_macro_reset(void);
 void dynamic_keymap_macro_send(uint8_t id);
 bool dynamic_keymap_macro_toggle_loop(uint8_t id);
 void dynamic_keymap_macro_arm_stop(uint8_t id);
+bool dynamic_keymap_macro_loop_active(void);
+uint8_t dynamic_keymap_macro_looping_id(void);
+bool dynamic_keymap_macro_is_active(uint8_t id);
+uint32_t dynamic_keymap_macro_active_mask(void);
