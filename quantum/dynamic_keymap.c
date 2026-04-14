@@ -35,6 +35,29 @@
 
 #ifdef VIAL_ENABLE
 #include "vial.h"
+#    include "timer.h"
+#    include "print.h"
+
+/*
+ * Manual test macro:
+ * loop_start, tap F1, rand_delay(1250, 2500), loop_end
+ *
+ * Action bytes:
+ * { 0x10, 0x01, 0x3A, 0x12, 0xEA, 0x04, 0xC4, 0x09, 0x11 }
+ *
+ * Stored dynamic-keymap bytes (with SS_QMK_PREFIX before each action):
+ * { 0x01, 0x10, 0x01, 0x01, 0x3A, 0x01, 0x12, 0xEA, 0x04, 0xC4, 0x09, 0x01, 0x11, 0x00 }
+ */
+__attribute__((unused)) static const uint8_t dynamic_keymap_macro_loop_rand_delay_test[] = {
+    SS_QMK_PREFIX, VIAL_MACRO_ACTION_LOOP_START,
+    SS_QMK_PREFIX, SS_TAP_CODE, KC_F1,
+    SS_QMK_PREFIX, VIAL_MACRO_ACTION_RAND_DELAY, 0xEA, 0x04, 0xC4, 0x09,
+    SS_QMK_PREFIX, VIAL_MACRO_ACTION_LOOP_END,
+    0x00
+};
+
+static volatile uint8_t dynamic_keymap_looping_macro_id = UINT8_MAX;
+static volatile bool    dynamic_keymap_loop_stop_requested = false;
 #endif
 
 #ifndef DYNAMIC_KEYMAP_MACRO_DELAY
@@ -274,6 +297,12 @@ void dynamic_keymap_macro_send(uint8_t id) {
     // Send the macro string one or three chars at a time
     // by making temporary 1 or 3 char strings
     char data[4] = {0, 0, 0, 0};
+#ifdef VIAL_ENABLE
+    bool     loop_active = false;
+    uint32_t loop_offset = 0;
+    uint32_t loop_iter_count = 0;
+#endif
+
     // We already checked there was a null at the end of
     // the buffer, so this cannot go past the end
     while (1) {
@@ -324,10 +353,69 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 // we cannot use 0 for these, need to subtract 1 and use 255 instead of 256 for delay calculation
                 int ms = (d0 - 1) + (d1 - 1) * 255;
                 while (ms--) wait_ms(1);
+#ifdef VIAL_ENABLE
+            } else if (data[1] == VIAL_MACRO_ACTION_LOOP_START) {
+                loop_offset = offset;
+                loop_active = true;
+                loop_iter_count = 0;
+                dynamic_keymap_looping_macro_id = id;
+                dynamic_keymap_loop_stop_requested = false;
+            } else if (data[1] == VIAL_MACRO_ACTION_LOOP_END) {
+                if (loop_active) {
+                    if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == id) {
+                        loop_active = false;
+                        dynamic_keymap_looping_macro_id = UINT8_MAX;
+                        dynamic_keymap_loop_stop_requested = false;
+                        continue;
+                    }
+                    if (++loop_iter_count > VIAL_MACRO_LOOP_MAX_ITER) {
+                        dprintf("dynamic_keymap_macro_send: loop guard triggered (%lu > %u)\n", (unsigned long)loop_iter_count, VIAL_MACRO_LOOP_MAX_ITER);
+                        loop_active = false;
+                        dynamic_keymap_looping_macro_id = UINT8_MAX;
+                        dynamic_keymap_loop_stop_requested = false;
+                    } else {
+                        offset = loop_offset;
+                        // yield to allow HID reports and other processing
+                        wait_ms(1);
+                    }
+                }
+            } else if (data[1] == VIAL_MACRO_ACTION_RAND_DELAY) {
+                uint16_t min_ms = dynamic_keymap_read_byte(offset++) | (dynamic_keymap_read_byte(offset++) << 8);
+                uint16_t max_ms = dynamic_keymap_read_byte(offset++) | (dynamic_keymap_read_byte(offset++) << 8);
+                if (min_ms > max_ms) {
+                    uint16_t tmp = min_ms;
+                    min_ms       = max_ms;
+                    max_ms       = tmp;
+                }
+                uint16_t delay  = min_ms;
+                uint16_t range  = max_ms - min_ms;
+                if (range > 0) {
+                    delay = min_ms + (timer_read() % (range + 1));
+                }
+                wait_ms(delay);
+#endif
             }
         } else {
             // If the char wasn't magic, just send it
             send_string_with_delay(data, DYNAMIC_KEYMAP_MACRO_DELAY);
         }
     }
+#ifdef VIAL_ENABLE
+    if (dynamic_keymap_looping_macro_id == id) {
+        dynamic_keymap_looping_macro_id = UINT8_MAX;
+        dynamic_keymap_loop_stop_requested = false;
+    }
+#endif
+}
+
+bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
+#ifdef VIAL_ENABLE
+    if (dynamic_keymap_looping_macro_id == id) {
+        dynamic_keymap_loop_stop_requested = true;
+        return true;
+    }
+#else
+    (void)id;
+#endif
+    return false;
 }

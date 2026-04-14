@@ -66,6 +66,28 @@ enum {
 #define VIAL_MACRO_EXT_DOWN 6
 #define VIAL_MACRO_EXT_UP 7
 
+#define VIAL_MACRO_ACTION_LOOP_START 0x10
+#define VIAL_MACRO_ACTION_LOOP_END 0x11
+#define VIAL_MACRO_ACTION_RAND_DELAY 0x12
+
+#ifndef VIAL_MACRO_LOOP_MAX_ITER
+#    define VIAL_MACRO_LOOP_MAX_ITER 10000
+#endif
+
+/*
+ * VIAL_MACRO_ACTION_RAND_DELAY encoding:
+ * [0x12] [min_lo] [min_hi] [max_lo] [max_hi]
+ * delays execution by random ms between min and max
+ *
+ * VIAL_MACRO_ACTION_LOOP_START encoding:
+ * [0x10]
+ * marks the jump-back point for loop
+ *
+ * VIAL_MACRO_ACTION_LOOP_END encoding:
+ * [0x11]
+ * jumps back to last LOOP_START
+ */
+
 void vial_keycode_down(uint16_t keycode);
 void vial_keycode_up(uint16_t keycode);
 void vial_keycode_tap(uint16_t keycode);

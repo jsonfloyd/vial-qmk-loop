@@ -185,6 +185,9 @@ bool process_record_via(uint16_t keycode, keyrecord_t *record) {
     if (record->event.pressed) {
         if (keycode >= QK_MACRO && keycode <= QK_MACRO_MAX) {
             uint8_t id = keycode - QK_MACRO;
+            if (dynamic_keymap_macro_toggle_loop(id)) {
+                return false;
+            }
             dynamic_keymap_macro_send(id);
             return false;
         }
