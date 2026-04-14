@@ -58,11 +58,16 @@ __attribute__((unused)) static const uint8_t dynamic_keymap_macro_loop_rand_dela
 
 static volatile uint8_t dynamic_keymap_looping_macro_id = UINT8_MAX;
 static volatile bool    dynamic_keymap_loop_stop_requested = false;
-static volatile bool    dynamic_keymap_loop_stop_armed = false;
+static volatile uint32_t dynamic_keymap_active_macro_mask  = 0;
+static volatile uint32_t dynamic_keymap_loop_start_time    = 0;
 #endif
 
 #ifndef DYNAMIC_KEYMAP_MACRO_DELAY
 #    define DYNAMIC_KEYMAP_MACRO_DELAY TAP_CODE_DELAY
+#endif
+
+#ifndef DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS
+#    define DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS 50
 #endif
 
 uint8_t dynamic_keymap_get_layer_count(void) {
@@ -266,6 +271,19 @@ static uint16_t decode_keycode(uint16_t kc) {
     return kc;
 }
 
+#ifdef VIAL_ENABLE
+static bool dynamic_keymap_wait_ms_interruptible(uint16_t delay_ms, uint8_t macro_id) {
+    while (delay_ms--) {
+        wait_ms(1);
+        keyboard_task();
+        if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == macro_id) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 void dynamic_keymap_macro_send(uint8_t id) {
     uint8_t macro_id = id;
 
@@ -301,6 +319,9 @@ void dynamic_keymap_macro_send(uint8_t id) {
     // by making temporary 1 or 3 char strings
     char data[4] = {0, 0, 0, 0};
 #ifdef VIAL_ENABLE
+    if (macro_id < 32) {
+        dynamic_keymap_active_macro_mask |= ((uint32_t)1u << macro_id);
+    }
     bool     loop_active = false;
     uint32_t loop_offset = 0;
     uint32_t loop_iter_count = 0;
@@ -354,8 +375,14 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 if (d0 == 0 || d1 == 0)
                     break;
                 // we cannot use 0 for these, need to subtract 1 and use 255 instead of 256 for delay calculation
-                int ms = (d0 - 1) + (d1 - 1) * 255;
+                uint16_t ms = (uint16_t)((d0 - 1) + (d1 - 1) * 255);
+#ifdef VIAL_ENABLE
+                if (dynamic_keymap_wait_ms_interruptible(ms, macro_id)) {
+                    break;
+                }
+#else
                 while (ms--) wait_ms(1);
+#endif
 #ifdef VIAL_ENABLE
             } else if (data[1] == VIAL_MACRO_ACTION_LOOP_START) {
                 loop_offset = offset;
@@ -363,22 +390,20 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 loop_iter_count = 0;
                 dynamic_keymap_looping_macro_id = macro_id;
                 dynamic_keymap_loop_stop_requested = false;
-                dynamic_keymap_loop_stop_armed = false;
+                dynamic_keymap_loop_start_time = timer_read32();
             } else if (data[1] == VIAL_MACRO_ACTION_LOOP_END) {
                 if (loop_active) {
                     if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == macro_id) {
                         loop_active = false;
                         dynamic_keymap_looping_macro_id = UINT8_MAX;
                         dynamic_keymap_loop_stop_requested = false;
-                        dynamic_keymap_loop_stop_armed = false;
-                        continue;
+                        break;
                     }
                     if (++loop_iter_count > VIAL_MACRO_LOOP_MAX_ITER) {
                         dprintf("dynamic_keymap_macro_send: loop guard triggered (%lu > %u)\n", (unsigned long)loop_iter_count, VIAL_MACRO_LOOP_MAX_ITER);
                         loop_active = false;
                         dynamic_keymap_looping_macro_id = UINT8_MAX;
                         dynamic_keymap_loop_stop_requested = false;
-                        dynamic_keymap_loop_stop_armed = false;
                     } else {
                         offset = loop_offset;
                         // yield to allow matrix/HID processing so a second press can request loop stop
@@ -403,7 +428,9 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 if (range > 0) {
                     delay = min_ms + (timer_read() % (range + 1));
                 }
-                wait_ms(delay);
+                if (dynamic_keymap_wait_ms_interruptible(delay, macro_id)) {
+                    break;
+                }
 #endif
             }
         } else {
@@ -412,10 +439,12 @@ void dynamic_keymap_macro_send(uint8_t id) {
         }
     }
 #ifdef VIAL_ENABLE
+    if (macro_id < 32) {
+        dynamic_keymap_active_macro_mask &= ~((uint32_t)1u << macro_id);
+    }
     if (dynamic_keymap_looping_macro_id == macro_id) {
         dynamic_keymap_looping_macro_id = UINT8_MAX;
         dynamic_keymap_loop_stop_requested = false;
-        dynamic_keymap_loop_stop_armed = false;
     }
 #endif
 }
@@ -423,7 +452,7 @@ void dynamic_keymap_macro_send(uint8_t id) {
 bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
 #ifdef VIAL_ENABLE
     if (dynamic_keymap_looping_macro_id == id) {
-        if (!dynamic_keymap_loop_stop_armed) {
+        if (timer_elapsed32(dynamic_keymap_loop_start_time) < DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS) {
             return true;
         }
         dynamic_keymap_loop_stop_requested = true;
@@ -437,10 +466,44 @@ bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
 
 void dynamic_keymap_macro_arm_stop(uint8_t id) {
 #ifdef VIAL_ENABLE
-    if (dynamic_keymap_looping_macro_id == id) {
-        dynamic_keymap_loop_stop_armed = true;
-    }
+    (void)id;
 #else
     (void)id;
+#endif
+}
+
+bool dynamic_keymap_macro_loop_active(void) {
+#ifdef VIAL_ENABLE
+    return dynamic_keymap_looping_macro_id != UINT8_MAX;
+#else
+    return false;
+#endif
+}
+
+uint8_t dynamic_keymap_macro_looping_id(void) {
+#ifdef VIAL_ENABLE
+    return dynamic_keymap_looping_macro_id;
+#else
+    return UINT8_MAX;
+#endif
+}
+
+bool dynamic_keymap_macro_is_active(uint8_t id) {
+#ifdef VIAL_ENABLE
+    if (id >= DYNAMIC_KEYMAP_MACRO_COUNT || id >= 32) {
+        return false;
+    }
+    return (dynamic_keymap_active_macro_mask & ((uint32_t)1u << id)) != 0;
+#else
+    (void)id;
+    return false;
+#endif
+}
+
+uint32_t dynamic_keymap_macro_active_mask(void) {
+#ifdef VIAL_ENABLE
+    return dynamic_keymap_active_macro_mask;
+#else
+    return 0;
 #endif
 }
