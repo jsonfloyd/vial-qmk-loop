@@ -21,7 +21,9 @@
 #include "send_string.h"
 #include "keycodes.h"
 #include "action_tapping.h"
+#include "matrix.h"
 #include "wait.h"
+#include "keyboard.h"
 #include <string.h>
 
 #include "qmk_settings.h"
@@ -58,9 +60,23 @@ __attribute__((unused)) static const uint8_t dynamic_keymap_macro_loop_rand_dela
 
 static volatile uint8_t dynamic_keymap_looping_macro_id = UINT8_MAX;
 static volatile bool    dynamic_keymap_loop_stop_requested = false;
+static volatile bool    dynamic_keymap_loop_stop_armed = false;
 static volatile uint32_t dynamic_keymap_active_macro_mask  = 0;
 static volatile uint32_t dynamic_keymap_loop_start_time    = 0;
 #endif
+
+#ifdef SPLIT_KEYBOARD
+static void dynamic_keymap_split_sync_tick(void) {
+    matrix_scan();
+    housekeeping_task();
+}
+#endif
+
+static void dynamic_keymap_post_send_tick(void) {
+#ifdef SPLIT_KEYBOARD
+    dynamic_keymap_split_sync_tick();
+#endif
+}
 
 #ifndef DYNAMIC_KEYMAP_MACRO_DELAY
 #    define DYNAMIC_KEYMAP_MACRO_DELAY TAP_CODE_DELAY
@@ -276,6 +292,7 @@ static bool dynamic_keymap_wait_ms_interruptible(uint16_t delay_ms, uint8_t macr
     while (delay_ms--) {
         wait_ms(1);
         keyboard_task();
+        housekeeping_task();
         if (dynamic_keymap_loop_stop_requested && dynamic_keymap_looping_macro_id == macro_id) {
             return true;
         }
@@ -343,10 +360,22 @@ void dynamic_keymap_macro_send(uint8_t id) {
             if (data[1] == 0)
                 break;
             if (data[1] == SS_TAP_CODE || data[1] == SS_DOWN_CODE || data[1] == SS_UP_CODE) {
-                // For tap, down, up, just stuff it into the array and send_string it
+                // Handle tap/down/up directly so we can service split transport between macro steps.
                 data[2] = dynamic_keymap_read_byte(offset++);
-                if (data[2] != 0)
-                    send_string(data);
+                if (data[2] != 0) {
+                    switch (data[1]) {
+                        case SS_TAP_CODE:
+                            tap_code(data[2]);
+                            break;
+                        case SS_DOWN_CODE:
+                            register_code(data[2]);
+                            break;
+                        case SS_UP_CODE:
+                            unregister_code(data[2]);
+                            break;
+                    }
+                    dynamic_keymap_post_send_tick();
+                }
             } else if (data[1] == VIAL_MACRO_EXT_TAP || data[1] == VIAL_MACRO_EXT_DOWN || data[1] == VIAL_MACRO_EXT_UP) {
                 data[2] = dynamic_keymap_read_byte(offset++);
                 if (data[2] != 0) {
@@ -366,6 +395,7 @@ void dynamic_keymap_macro_send(uint8_t id) {
                             vial_keycode_up(kc);
                             break;
                         }
+                        dynamic_keymap_post_send_tick();
                     }
                 }
             } else if (data[1] == SS_DELAY_CODE) {
@@ -390,6 +420,7 @@ void dynamic_keymap_macro_send(uint8_t id) {
                 loop_iter_count = 0;
                 dynamic_keymap_looping_macro_id = macro_id;
                 dynamic_keymap_loop_stop_requested = false;
+                dynamic_keymap_loop_stop_armed = false;
                 dynamic_keymap_loop_start_time = timer_read32();
             } else if (data[1] == VIAL_MACRO_ACTION_LOOP_END) {
                 if (loop_active) {
@@ -397,6 +428,7 @@ void dynamic_keymap_macro_send(uint8_t id) {
                         loop_active = false;
                         dynamic_keymap_looping_macro_id = UINT8_MAX;
                         dynamic_keymap_loop_stop_requested = false;
+                        dynamic_keymap_loop_stop_armed = false;
                         break;
                     }
                     if (++loop_iter_count > VIAL_MACRO_LOOP_MAX_ITER) {
@@ -404,10 +436,12 @@ void dynamic_keymap_macro_send(uint8_t id) {
                         loop_active = false;
                         dynamic_keymap_looping_macro_id = UINT8_MAX;
                         dynamic_keymap_loop_stop_requested = false;
+                        dynamic_keymap_loop_stop_armed = false;
                     } else {
                         offset = loop_offset;
                         // yield to allow matrix/HID processing so a second press can request loop stop
                         keyboard_task();
+                        housekeeping_task();
                         wait_ms(1);
                     }
                 }
@@ -434,8 +468,9 @@ void dynamic_keymap_macro_send(uint8_t id) {
 #endif
             }
         } else {
-            // If the char wasn't magic, just send it
-            send_string_with_delay(data, DYNAMIC_KEYMAP_MACRO_DELAY);
+            // If the char wasn't magic, send the single character and then service split transport.
+            send_char_with_delay(data[0], DYNAMIC_KEYMAP_MACRO_DELAY);
+            dynamic_keymap_post_send_tick();
         }
     }
 #ifdef VIAL_ENABLE
@@ -445,6 +480,7 @@ void dynamic_keymap_macro_send(uint8_t id) {
     if (dynamic_keymap_looping_macro_id == macro_id) {
         dynamic_keymap_looping_macro_id = UINT8_MAX;
         dynamic_keymap_loop_stop_requested = false;
+        dynamic_keymap_loop_stop_armed = false;
     }
 #endif
 }
@@ -453,9 +489,11 @@ bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
 #ifdef VIAL_ENABLE
     if (dynamic_keymap_looping_macro_id == id) {
         if (timer_elapsed32(dynamic_keymap_loop_start_time) < DYNAMIC_KEYMAP_LOOP_TOGGLE_GUARD_MS) {
+            dynamic_keymap_loop_stop_armed = true;
             return true;
         }
         dynamic_keymap_loop_stop_requested = true;
+        dynamic_keymap_loop_stop_armed = false;
         return true;
     }
 #else
@@ -466,7 +504,10 @@ bool dynamic_keymap_macro_toggle_loop(uint8_t id) {
 
 void dynamic_keymap_macro_arm_stop(uint8_t id) {
 #ifdef VIAL_ENABLE
-    (void)id;
+    if (dynamic_keymap_loop_stop_armed && dynamic_keymap_looping_macro_id == id) {
+        dynamic_keymap_loop_stop_requested = true;
+        dynamic_keymap_loop_stop_armed = false;
+    }
 #else
     (void)id;
 #endif
