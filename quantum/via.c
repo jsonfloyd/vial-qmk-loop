@@ -179,18 +179,23 @@ void via_set_layout_options(uint32_t value) {
     }
 }
 
+static uint32_t dynamic_keymap_macro_send_deferred(uint32_t trigger_time, void *cb_arg) {
+    (void)trigger_time;
+    uint8_t id = (uint8_t)(uintptr_t)cb_arg;
+    dynamic_keymap_macro_send(id);
+    return 0;
+}
+
 // Called by QMK core to process VIA-specific keycodes.
 bool process_record_via(uint16_t keycode, keyrecord_t *record) {
     // Handle macros
-    if (keycode >= QK_MACRO && keycode <= QK_MACRO_MAX) {
+    if (record->event.pressed && keycode >= QK_MACRO && keycode <= QK_MACRO_MAX) {
         uint8_t id = keycode - QK_MACRO;
-        if (record->event.pressed) {
-            if (dynamic_keymap_macro_toggle_loop(id)) {
-                return false;
-            }
+        if (dynamic_keymap_macro_toggle_loop(id)) {
+            return false;
+        }
+        if (defer_exec(0, dynamic_keymap_macro_send_deferred, (void *)(uintptr_t)id) == INVALID_DEFERRED_TOKEN) {
             dynamic_keymap_macro_send(id);
-        } else {
-            dynamic_keymap_macro_arm_stop(id);
         }
         return false;
     }
